@@ -36,8 +36,6 @@ func (s *SunCalculator) CalculateSunTimes(date time.Time) (sunrise, sunset time.
 
 	N := float64(localDate.YearDay())
 
-	hourAngle := s.calculateHourAngle(N)
-
 	zenith := 90.833
 
 	declination := 23.45 * math.Sin(s.toRadians(360.0/365.0*(284.0+N)))
@@ -56,19 +54,21 @@ func (s *SunCalculator) CalculateSunTimes(date time.Time) (sunrise, sunset time.
 		return sunrise, sunset
 	}
 
-	noon := s.calculateSolarNoon(N)
+	noonUTC := s.calculateSolarNoonUTC(N)
 
-	sunriseMinutes := noon - ha/15.0*60.0
-	sunsetMinutes := noon + ha/15.0*60.0
+	sunriseMinutesUTC := noonUTC - ha/15.0*60.0
+	sunsetMinutesUTC := noonUTC + ha/15.0*60.0
 
-	sunrise = minutesToTime(year, month, day, sunriseMinutes, s.timezone)
-	sunset = minutesToTime(year, month, day, sunsetMinutes, s.timezone)
+	sunriseUTC := minutesToTimeUTC(year, month, day, sunriseMinutesUTC)
+	sunsetUTC := minutesToTimeUTC(year, month, day, sunsetMinutesUTC)
 
-	_ = hourAngle
+	sunrise = sunriseUTC.In(s.timezone)
+	sunset = sunsetUTC.In(s.timezone)
+
 	return sunrise, sunset
 }
 
-func (s *SunCalculator) calculateSolarNoon(N float64) float64 {
+func (s *SunCalculator) calculateSolarNoonUTC(N float64) float64 {
 	tGamma := (2.0 * math.Pi / 365.0) * (N - 1.0)
 
 	eqTime := 229.18 * (0.000075 +
@@ -86,31 +86,10 @@ func (s *SunCalculator) calculateHourAngle(N float64) float64 {
 	return 0
 }
 
-func minutesToTime(year int, month time.Month, day int, totalMinutes float64, loc *time.Location) time.Time {
-	hours := int(totalMinutes / 60)
-	minutes := int(totalMinutes - float64(hours)*60)
-	seconds := int((totalMinutes - float64(hours)*60 - float64(minutes)) * 60)
-
-	if hours < 0 {
-		hours = 6
-	}
-	if hours > 23 {
-		hours = 18
-	}
-	if minutes < 0 {
-		minutes = 0
-	}
-	if minutes > 59 {
-		minutes = 0
-	}
-	if seconds < 0 {
-		seconds = 0
-	}
-	if seconds > 59 {
-		seconds = 0
-	}
-
-	return time.Date(year, month, day, hours, minutes, seconds, 0, loc)
+func minutesToTimeUTC(year int, month time.Month, day int, totalMinutes float64) time.Time {
+	base := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+	duration := time.Duration(totalMinutes * float64(time.Minute))
+	return base.Add(duration)
 }
 
 func (s *SunCalculator) IsDaylight(now time.Time) bool {
