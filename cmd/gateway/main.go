@@ -32,6 +32,11 @@ var (
 	plcPort       = flag.Int("plc-port", 502, "PLC server port")
 	greenhouseID  = flag.String("greenhouse-id", "GH-001", "Greenhouse ID")
 	logLevel      = flag.String("log-level", "info", "Log level (trace, debug, info, warn, error)")
+	latitude      = flag.Float64("latitude", 39.9042, "Greenhouse latitude for sun calculation")
+	longitude     = flag.Float64("longitude", 116.4074, "Greenhouse longitude for sun calculation")
+	ledAddress    = flag.String("led-address", "127.0.0.1", "LED controller address")
+	ledPort       = flag.Int("led-port", 503, "LED controller port")
+	targetDLI     = flag.Float64("target-dli", 15.0, "Target DLI in mol/m²/d (default 15 for tomato)")
 )
 
 func init() {
@@ -53,12 +58,18 @@ func main() {
 	logger.Infof("Greenhouse ID: %s", *greenhouseID)
 	logger.Infof("Use mock sensors: %v", *useMock)
 	logger.Infof("API Port: %s", *apiPort)
+	logger.Infof("Location: lat=%.4f, lng=%.4f", *latitude, *longitude)
+	logger.Infof("Target DLI: %.1f mol/m²/d", *targetDLI)
 
 	sensorRepo := sensor.NewInMemorySensorRepository()
 	readingRepo := sensor.NewInMemorySensorReadingRepository(10000)
 	vpdRepo := database.NewInMemoryVPDRepository(10000)
 	plcRepo := database.NewInMemoryPLCCommandRepository()
 	tsRepo := database.NewInfluxDBClient(logger, true)
+
+	dliRepo := database.NewInMemoryDLIRepository()
+	planRepo := database.NewInMemoryLightPlanRepository()
+	ledRepo := database.NewInMemoryLEDDeviceRepository()
 
 	sensorFactory := sensor.NewSensorFactory()
 	sensors := sensorFactory.Create50Sensors()
@@ -69,6 +80,14 @@ func main() {
 	}
 	logger.Infof("Initialized %d sensors", len(sensors))
 
+	var parSensorIDs []uint16
+	for _, s := range sensors {
+		if s.Type == entity.SensorTypePAR {
+			parSensorIDs = append(parSensorIDs, s.ID)
+		}
+	}
+	logger.Infof("Found %d PAR sensors for DLI calculation", len(parSensorIDs))
+
 	var mockServers []*sensor.MockSensorServer
 	if *useMock {
 		mockServers = startMockServers(sensors)
@@ -76,10 +95,25 @@ func main() {
 
 	sensorClient := sensor.NewTCPSensorClient(logger)
 	plcClient := plc.NewPLCClient(*plcAddress, *plcPort, logger)
+	ledController := plc.NewLEDController(*ledAddress, *ledPort, logger, ledRepo)
+
+	sunCalc := service.NewSunCalculator(*latitude, *longitude, time.Local)
 
 	vpdCalculator := service.NewVPDCalculatorService(vpdRepo, readingRepo, tsRepo, logger).(*service.VPDCalculatorService)
 	ruleEngine := service.NewVPDRuleEngineService(vpdRepo, logger).(*service.VPDRuleEngineService)
 	commandGenerator := service.NewPLCCommandGeneratorService().(*service.PLCCommandGeneratorService)
+
+	dliCoordinator := service.NewDLICoordinator(
+		dliRepo,
+		planRepo,
+		ledRepo,
+		ledController,
+		sunCalc,
+		logger,
+		*greenhouseID,
+		parSensorIDs,
+	)
+	dliCoordinator.SetTargetDLI(*targetDLI)
 
 	controller := service.NewClimateController(
 		sensorClient,
@@ -92,6 +126,7 @@ func main() {
 		ruleEngine,
 		commandGenerator,
 		plcClient,
+		dliCoordinator,
 		logger,
 		*greenhouseID,
 	)
@@ -109,6 +144,10 @@ func main() {
 		ruleEngine,
 		plcRepo,
 		plcClient,
+		dliRepo,
+		planRepo,
+		ledRepo,
+		dliCoordinator,
 		controller,
 		mockServers,
 	)
@@ -200,6 +239,10 @@ func setupRouter(
 	ruleEngine *service.VPDRuleEngineService,
 	plcRepo repository.PLCCommandRepository,
 	plcClient *plc.PLCClient,
+	dliRepo repository.DLIRepository,
+	planRepo repository.LightSupplementPlanRepository,
+	ledRepo repository.LEDDeviceRepository,
+	dliCoordinator *service.DLICoordinator,
 	controller *service.ClimateController,
 	mockServers []*sensor.MockSensorServer,
 ) *gin.Engine {
@@ -218,6 +261,7 @@ func setupRouter(
 	vpdHandler := api.NewVPDHandler(vpdRepo, vpdCalculator, ruleEngine, controller, logger)
 	plcHandler := api.NewPLCHandler(plcRepo, plcClient, controller, logger)
 	systemHandler := api.NewSystemHandler(controller, mockServer, logger, *useMock)
+	dliHandler := api.NewDLIHandler(dliRepo, planRepo, ledRepo, dliCoordinator, logger)
 
 	apiV1 := r.Group("/api/v1")
 	{
@@ -251,6 +295,31 @@ func setupRouter(
 			plc.POST("/mist-cooling", plcHandler.TriggerMistCooling)
 			plc.POST("/co2-control", plcHandler.TriggerCO2Control)
 			plc.POST("/stop/:device_id", plcHandler.StopDevice)
+		}
+
+		dli := apiV1.Group("/dli")
+		{
+			dli.GET("", dliHandler.GetCurrentDLI)
+			dli.GET("/status", dliHandler.GetDLIStatus)
+			dli.GET("/history", dliHandler.GetDLIHistory)
+			dli.GET("/stats", dliHandler.GetDLIStats)
+			dli.GET("/threshold", dliHandler.GetThresholdConfig)
+			dli.GET("/sun-times", dliHandler.GetSunTimes)
+			dli.POST("/target", dliHandler.SetTargetDLI)
+
+			plans := dli.Group("/plans")
+			{
+				plans.GET("/active", dliHandler.GetActivePlan)
+				plans.GET("/history", dliHandler.GetPlanHistory)
+				plans.POST("/start", dliHandler.StartSupplement)
+				plans.POST("/stop", dliHandler.StopSupplement)
+			}
+
+			leds := dli.Group("/leds")
+			{
+				leds.GET("", dliHandler.GetLEDDevices)
+				leds.GET("/zone/:zone", dliHandler.GetLEDByZone)
+			}
 		}
 
 		system := apiV1.Group("/system")

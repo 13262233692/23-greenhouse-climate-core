@@ -57,3 +57,11 @@ func (s *SensorReading) HasLeafData() bool {
 func (s *SensorReading) HasAirData() bool {
 	return s.AirTemp != 0 || s.AirHumidity != 0
 }
+
+func (s *SensorReading) HasPARData() bool {
+	return s.PAR > 0
+}
+
+func (s *SensorReading) HasCO2Data() bool {
+	return s.CO2 > 0
+}

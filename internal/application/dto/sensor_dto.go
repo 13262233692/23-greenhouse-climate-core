@@ -63,6 +63,61 @@ type ControlAction struct {
 	Reason      string `json:"reason"`
 }
 
+type DLIDTO struct {
+	ID              uint64    `json:"id"`
+	GreenhouseID    string    `json:"greenhouse_id"`
+	SensorID        uint16    `json:"sensor_id"`
+	Date            time.Time `json:"date"`
+	AccumulatedDLI  float64   `json:"accumulated_dli"`
+	TargetDLI       float64   `json:"target_dli"`
+	CurrentPAR      float64   `json:"current_par"`
+	SunriseTime     time.Time `json:"sunrise_time"`
+	SunsetTime      time.Time `json:"sunset_time"`
+	LastUpdated     time.Time `json:"last_updated"`
+	Deficit         float64   `json:"deficit"`
+	ProjectedDLI    float64   `json:"projected_dli"`
+	IsSupplementing bool      `json:"is_supplementing"`
+	RemainingMinutes int      `json:"remaining_minutes"`
+}
+
+type LightPlanDTO struct {
+	ID             uint64      `json:"id"`
+	GreenhouseID   string      `json:"greenhouse_id"`
+	TargetDLI      float64     `json:"target_dli"`
+	CurrentDLI     float64     `json:"current_dli"`
+	Deficit        float64     `json:"deficit"`
+	RemainingHours float64     `json:"remaining_hours"`
+	RequiredPower  float64     `json:"required_power"`
+	PowerSteps     []float64   `json:"power_steps"`
+	StepDurationMs int64       `json:"step_duration_ms"`
+	Devices        []LEDDeviceDTO `json:"devices"`
+	StartTime      time.Time   `json:"start_time"`
+	EndTime        time.Time   `json:"end_time"`
+	IsActive       bool        `json:"is_active"`
+	CreatedAt      time.Time   `json:"created_at"`
+	CurrentStep    int         `json:"current_step"`
+	CurrentPower   float64     `json:"current_power"`
+}
+
+type LEDDeviceDTO struct {
+	ID           uint8   `json:"id"`
+	Name         string  `json:"name"`
+	MaxPower     float64 `json:"max_power"`
+	CurrentPower float64 `json:"current_power"`
+	IsActive     bool    `json:"is_active"`
+	Zone         string  `json:"zone"`
+	PowerPercent float64 `json:"power_percent"`
+}
+
+type SunTimesDTO struct {
+	Sunrise          time.Time `json:"sunrise"`
+	Sunset           time.Time `json:"sunset"`
+	DaylightDuration string    `json:"daylight_duration"`
+	DaylightHours    float64   `json:"daylight_hours"`
+	IsDaylight       bool      `json:"is_daylight"`
+	TimeUntilSunset  string    `json:"time_until_sunset"`
+}
+
 func ToSensorDTO(s *entity.Sensor, isConnected bool) *SensorDTO {
 	return &SensorDTO{
 		ID:          s.ID,
@@ -119,5 +174,87 @@ func ToPLCCommandDTO(c *entity.PLCCommand) *PLCCommandDTO {
 		Status:        string(c.Status),
 		CreatedAt:     c.CreatedAt,
 		Reason:        c.Reason,
+	}
+}
+
+func ToDLIDTO(d *entity.DLIReading) *DLIDTO {
+	if d == nil {
+		return nil
+	}
+	return &DLIDTO{
+		ID:               d.ID,
+		GreenhouseID:     d.GreenhouseID,
+		SensorID:         d.SensorID,
+		Date:             d.Date,
+		AccumulatedDLI:   d.AccumulatedDLI,
+		TargetDLI:        d.TargetDLI,
+		CurrentPAR:       d.CurrentPAR,
+		SunriseTime:      d.SunriseTime,
+		SunsetTime:       d.SunsetTime,
+		LastUpdated:      d.LastUpdated,
+		Deficit:          d.Deficit,
+		ProjectedDLI:     d.ProjectedDLI,
+		IsSupplementing:  d.IsSupplementing,
+		RemainingMinutes: d.GetRemainingMinutesUntilSunset(),
+	}
+}
+
+func ToLightPlanDTO(p *entity.LightSupplementPlan) *LightPlanDTO {
+	if p == nil {
+		return nil
+	}
+	devices := make([]LEDDeviceDTO, 0, len(p.Devices))
+	for _, dev := range p.Devices {
+		devices = append(devices, ToLEDDeviceDTO(dev))
+	}
+	return &LightPlanDTO{
+		ID:             p.ID,
+		GreenhouseID:   p.GreenhouseID,
+		TargetDLI:      p.TargetDLI,
+		CurrentDLI:     p.CurrentDLI,
+		Deficit:        p.Deficit,
+		RemainingHours: p.RemainingHours,
+		RequiredPower:  p.RequiredPower,
+		PowerSteps:     p.PowerSteps,
+		StepDurationMs: p.StepDuration.Milliseconds(),
+		Devices:        devices,
+		StartTime:      p.StartTime,
+		EndTime:        p.EndTime,
+		IsActive:       p.IsActive,
+		CreatedAt:      p.CreatedAt,
+		CurrentStep:    p.GetCurrentStep(),
+		CurrentPower:   p.GetCurrentPower(),
+	}
+}
+
+func ToLEDDeviceDTO(d *entity.LEDLightDevice) LEDDeviceDTO {
+	powerPercent := 0.0
+	if d.MaxPower > 0 {
+		powerPercent = (d.CurrentPower / d.MaxPower) * 100
+	}
+	return LEDDeviceDTO{
+		ID:           d.ID,
+		Name:         d.Name,
+		MaxPower:     d.MaxPower,
+		CurrentPower: d.CurrentPower,
+		IsActive:     d.IsActive,
+		Zone:         d.Zone,
+		PowerPercent: powerPercent,
+	}
+}
+
+func ToSunTimesDTO(sunrise, sunset time.Time, now time.Time) *SunTimesDTO {
+	duration := sunset.Sub(sunrise)
+	until := time.Until(sunset)
+	if until < 0 {
+		until = 0
+	}
+	return &SunTimesDTO{
+		Sunrise:          sunrise,
+		Sunset:           sunset,
+		DaylightDuration: duration.String(),
+		DaylightHours:    duration.Hours(),
+		IsDaylight:       !now.Before(sunrise) && !now.After(sunset),
+		TimeUntilSunset:  until.String(),
 	}
 }

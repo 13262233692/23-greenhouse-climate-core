@@ -31,9 +31,11 @@ type ClimateController struct {
 	ruleEngine       *VPDRuleEngineService
 	commandGenerator *PLCCommandGeneratorService
 	plcClient        *plc.PLCClient
+	dliCoordinator   *DLICoordinator
 	logger           *logrus.Logger
 	greenhouseID     string
 	readingChan      <-chan *entity.SensorReading
+	dliReadingChan   chan *entity.SensorReading
 	latestReadings   map[uint16]*entity.SensorReading
 	stopChan         chan struct{}
 	wg               sync.WaitGroup
@@ -59,6 +61,7 @@ func NewClimateController(
 	ruleEngine *VPDRuleEngineService,
 	commandGenerator *PLCCommandGeneratorService,
 	plcClient *plc.PLCClient,
+	dliCoordinator *DLICoordinator,
 	logger *logrus.Logger,
 	greenhouseID string,
 ) *ClimateController {
@@ -75,9 +78,11 @@ func NewClimateController(
 		ruleEngine:       ruleEngine,
 		commandGenerator: commandGenerator,
 		plcClient:        plcClient,
+		dliCoordinator:   dliCoordinator,
 		logger:           logger,
 		greenhouseID:     greenhouseID,
 		latestReadings:   make(map[uint16]*entity.SensorReading),
+		dliReadingChan:   make(chan *entity.SensorReading, DefaultChannelBuffer),
 		stopChan:         make(chan struct{}),
 		ctx:              ctx,
 		cancel:           cancel,
@@ -101,6 +106,13 @@ func (c *ClimateController) Start() error {
 	}
 
 	c.readingChan = c.sensorClient.GetReadingChannel()
+
+	if c.dliCoordinator != nil {
+		c.dliCoordinator.SetReadingChannel(c.dliReadingChan)
+		if err := c.dliCoordinator.Start(); err != nil {
+			c.logger.Warnf("Failed to start DLI coordinator: %v", err)
+		}
+	}
 
 	go c.monitorStats()
 
@@ -204,6 +216,14 @@ func (c *ClimateController) processReading(reading *entity.SensorReading) {
 	}
 
 	atomic.AddUint64(&c.processedCount, 1)
+
+	if c.dliCoordinator != nil && reading.HasPARData() {
+		select {
+		case c.dliReadingChan <- reading:
+		default:
+			c.logger.Tracef("DLI channel full, dropping PAR sample from sensor %d", reading.SensorID)
+		}
+	}
 
 	if reading.HasLeafData() {
 		select {
@@ -359,6 +379,10 @@ func (c *ClimateController) Stop() {
 
 	c.plcClient.Stop()
 
+	if c.dliCoordinator != nil {
+		c.dliCoordinator.Stop()
+	}
+
 	c.wg.Wait()
 
 	stats := c.GetStats()
@@ -426,4 +450,8 @@ func (c *ClimateController) GetRuleEngine() *VPDRuleEngineService {
 
 func (c *ClimateController) GetCommandGenerator() *PLCCommandGeneratorService {
 	return c.commandGenerator
+}
+
+func (c *ClimateController) GetDLICoordinator() *DLICoordinator {
+	return c.dliCoordinator
 }
