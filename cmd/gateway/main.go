@@ -143,7 +143,7 @@ func main() {
 		mockServer.Stop()
 	}
 
-	if influxClient, ok := tsRepo.(*database.InfluxDBClient); ok {
+	if influxClient, ok := tsRepo.(influxDBClient); ok {
 		influxClient.Close()
 	}
 
@@ -185,6 +185,10 @@ func startMockServers(sensors []*entity.Sensor) []*sensor.MockSensorServer {
 
 	logger.Infof("Started %d mock sensor servers", len(servers))
 	return servers
+}
+
+type influxDBClient interface {
+	Close()
 }
 
 func setupRouter(
